@@ -1,99 +1,170 @@
 /* ==================================================================
-Robot Project Main: 
-Robot_Demo3.ino edited by Sophie Robertson | 10/25/2023
+Robot Final Project Main: 
+Gardener_Robot.ino edited by Sophie Robertson | 12/7/2023
 =====================================================================
-Pressing the green button will start gardening process.
-Robot will start pointing to -y
+I believe another team is doing an actual watering system better,
+so I focused on monitoring/mapping obstacles (plants) and their heights.
+
+With this information, could figure out which plants are below avg &
+make sure they get proper nutrition, or base nutrition on height.
 =====================================================================
-When a motor is moving, LED on (1s at a time)
-When a motor is targeting 0 (stopping), LED off (0.1s may be too fast)
+Import results into MATLAB to get 2d plot of obstacle heights
+=====================================================================
+Uses:
+-OWI Robot arm 
+-6-axis IMU Sensor x2:          Base-Elbow (BE) & Elbow-Wrist (EW)
+-Ultrasonic Distance Sensor x2: Top_BE & Bot_BE 
+=====================================================================
+flipped = 0:  BE = -11,11,0    EW = 0,0,16
+flipped = 1:  BE =  11,11,0    EW = 0,0,-16
 =====================================================================*/
-#include <AFMotor.h> // https://learn.adafruit.com/adafruit-motor-shield/af-dcmotor-class
-AF_DCMotor base(1, MOTOR12_1KHZ); //m1: base
-AF_DCMotor elbow(2, MOTOR12_1KHZ); //m2: elbow
-AF_DCMotor wrist(3, MOTOR34_1KHZ); //m3: wrist
-AF_DCMotor grabber(4, MOTOR34_1KHZ); //m4: grab
+#include "Gardener_Robot.h"
+float heightOfRobot = 0.0; 
 
-const int ledPin = 53; // the number of the LED pin
-const int basePotPin = A0; //analog pin
-const int shoulderPotPin = A1; //analog pin
-const int elbowPotPin = A2; //analog pin
-const int wristPotPin = A3; //analog pin
-const int grabberPotPin = A4; //analog pin
-
-int basePVal = 0, shoulderPVal = 0, elbowPVal = 0, wristPVal = 0, grabberPVal = 0;
-
-void updatePots() {
-  basePVal = analogRead(basePotPin);
-  shoulderPVal = analogRead(shoulderPotPin);
-  elbowPVal = analogRead(elbowPotPin);
-  wristPVal = analogRead(wristPotPin);
-  grabberPVal = analogRead(grabberPotPin);
-}
-
-void baseR(int delayTime) {
-  Serial.println("m1:base right"); base.setSpeed(255);
-  base.run(FORWARD); digitalWrite(ledPin,HIGH); delay(delayTime); 
-  base.setSpeed(0); digitalWrite(ledPin,LOW); delay(100); 
-}
-void baseL(int delayTime) {
-  Serial.println("m1:base left"); base.setSpeed(255);
-  base.run(BACKWARD); digitalWrite(ledPin,HIGH); delay(delayTime); 
-  base.setSpeed(0); digitalWrite(ledPin,LOW); delay(100); 
-}
-void elbowU(int delayTime) {
-  Serial.println("m2:elbow up"); elbow.setSpeed(255);
-  elbow.run(BACKWARD); digitalWrite(ledPin,HIGH); delay(delayTime);
-  elbow.setSpeed(0); digitalWrite(ledPin,LOW); delay(100);
-}
-void elbowD(int delayTime) {
-  Serial.println("m2:elbow down"); elbow.setSpeed(255);
-  elbow.run(FORWARD); digitalWrite(ledPin,HIGH); delay(delayTime);
-  elbow.setSpeed(0); digitalWrite(ledPin,LOW); delay(100);
-}
-void wristU(int delayTime) {
-  Serial.println("m3:wrist up"); wrist.setSpeed(255);
-  wrist.run(BACKWARD); digitalWrite(ledPin,HIGH); delay(delayTime);  //takes 8s for full movement i think?
-  wrist.setSpeed(0); digitalWrite(ledPin,LOW); delay(100); 
-}
-void wristD(int delayTime) {
-  Serial.println("m3:wrist down"); wrist.setSpeed(255);
-  wrist.run(FORWARD); digitalWrite(ledPin,HIGH); delay(delayTime);  //takes 8s for full movement i think?
-  wrist.setSpeed(0); digitalWrite(ledPin,LOW); delay(100); 
-}
-void grab(int delayTime) {
-  Serial.println("m4:grab"); grabber.setSpeed(255);
-  grabber.run(FORWARD); digitalWrite(ledPin,HIGH); delay(delayTime);
-  grabber.setSpeed(0); digitalWrite(ledPin,LOW); delay(100); 
-}
-void ungrab(int delayTime) {
-  Serial.println("m4:ungrab"); grabber.setSpeed(255);
-  grabber.run(BACKWARD); digitalWrite(ledPin,HIGH); delay(delayTime);
-  grabber.setSpeed(0); digitalWrite(ledPin,LOW); delay(100); 
-}
-void setup() { // put your setup code here, to run once:
-  Serial.begin(38400);
-  pinMode(ledPin,OUTPUT); // initialize the LED pin as an output:
-  base.setSpeed(255);
-  elbow.setSpeed(255);
-  wrist.setSpeed(255);
-  grabber.setSpeed(255);
-}
-void loop() { // put your main code here, to run repeatedly:
-  //start at down ungrabbed @ starting point
-  updatePots(); //update all 5 potentiometers 
-  for (int i=0;i<5;i++) {
-    //grab and move right 5 cm+, let go
-    grab(1000);   //grab
-    wristU(3000); //move wrist up
-    elbowU(2000); //move elbow up (2s)
-    baseR(7000);  //move base right (7s) 5cm ?
-    wristD(3000); //move wrist down
-    elbowD(2000); //move elbow down 
-    ungrab(1000); //ungrab
-    delay(10000); //wait 10s for user to mark block
-    //move left 5cm+, ready for next grab
-    baseL(7500);  //move base left (7s) 5cm ?
+void SafeTravels() {
+  yVals0.goToHead(); // heights
+  xVals0.goToHead(); // travel left time in sets of 50us 
+  int currVal0 = xVals0.getCurrent();
+  int currVal1 = xVals1.getCurrent();
+  int matchedHeight0 = yVals0.getCurrent();
+  int matchedHeight1 = yVals1.getCurrent();
+  while (xVals0.next()) {
+    matchedHeight0 = yVals0.getCurrent();
+    int nextVal = xVals0.getCurrent();
+    float distOfObs = 0;
+    if (currVal0 == nextVal) { //no time travelled left, must've travelled up
+      distOfObs = loopUS_DS(US_L_TRIG_PIN, US_L_ECHO_PIN,0);
+      //TODO: could use height -> travel up time, some sort of map
+      while (loopUS_DS(US_L_TRIG_PIN, US_L_ECHO_PIN,0) <= distOfObs + 1) { //while obstacle is still to the left
+        shoulderU(50); // move up
+        levelElbow(); // level elbow to keep reading consistent //TODO: maybe don't need 
+      }
+    }
+    else {
+      baseL(50);
+      limitSW1 = digitalRead(limitSW1_PIN);
+      if (limitSW1 == 1) {
+        flipRobot();
+      }
+    }
+    currVal0 = nextVal;
   }
-  delay(10000);
+  while (xVals1.next()) {
+    matchedHeight1 = yVals1.getCurrent();
+    int nextVal = xVals1.getCurrent();
+    float distOfObs = 0;
+    if (currVal1 == nextVal) { //no time travelled right, must've travelled up
+      distOfObs = loopUS_DS(US_L_TRIG_PIN, US_L_ECHO_PIN,0);
+      //TODO: could use height -> travel up time, some sort of map
+      while (loopUS_DS(US_L_TRIG_PIN, US_L_ECHO_PIN,0) <= distOfObs + 1) { //while obstacle is still to the left
+        shoulderU(50); // move up
+        levelElbow(); // level elbow to keep reading consistent //TODO: maybe don't need 
+      }
+    }
+    else {
+      baseR(50);
+      limitSW2 = digitalRead(limitSW2_PIN);
+      if ((limitSW2 == 1)||!(xVals1.next())) {
+        flipRobot();
+      }
+      xVals1.prev();
+    }
+    currVal1 = nextVal;
+  }
+}
+
+void createYVals() { 
+  Serial.print("Starting YVals0 Measurement");
+  float heightOfRobot = loopUS_DS(US_B_TRIG_PIN, US_B_ECHO_PIN,0); //finds height
+  while (flipped == 0) {
+    float cmFromRobot = loopUS_DS(US_B_TRIG_PIN, US_B_ECHO_PIN,0); //cm from US sensor (cm)
+    float cmObs_H = heightOfRobot - cmFromRobot; //height of obstacle 
+    Serial.println(cmObs_H);
+    yVals0.append(cmObs_H);
+    baseL(100);
+    delay(100);
+    limitSW1 = digitalRead(limitSW1_PIN);
+    if (limitSW1 == 1) {
+      flipRobot(); //should escape loop
+      RobotStraightUp();
+      shoulderD(500);
+      levelElbow();
+      elbowU(800);
+    }
+  }
+  Serial.print("Starting YVals1 Measurement");
+  heightOfRobot = loopUS_DS(US_T_TRIG_PIN, US_T_ECHO_PIN,0); //finds height (flipped)
+  while (flipped == 1) {
+    float cmFromRobot = loopUS_DS(US_T_TRIG_PIN, US_T_ECHO_PIN,0); //cm from US sensor (cm)
+    float cmObs_H = heightOfRobot - cmFromRobot; //height of obstacle 
+    Serial.println(cmObs_H);
+    yVals1.append(cmObs_H);
+    baseR(50);
+    delay(100);
+    limitSW2 = digitalRead(limitSW2_PIN);
+    if (limitSW2 == 1) {
+      flipRobot(); //should escape loop
+      RobotStraightUp();
+      levelElbow();
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(limitSW1_PIN,INPUT);
+  pinMode(limitSW2_PIN,INPUT);
+  pinMode(startSW_PIN, INPUT);
+  pinMode(US_L_ECHO_PIN, INPUT);
+  pinMode(US_T_ECHO_PIN, INPUT);
+  pinMode(US_B_ECHO_PIN, INPUT);
+  pinMode(ledPin,OUTPUT);
+  pinMode(basePotPin,OUTPUT);
+  pinMode(US_L_TRIG_PIN, OUTPUT);
+  pinMode(US_T_TRIG_PIN, OUTPUT);
+  pinMode(US_B_TRIG_PIN, OUTPUT);
+  digitalWrite(US_L_TRIG_PIN, LOW);
+  digitalWrite(US_T_TRIG_PIN, LOW);
+  digitalWrite(US_B_TRIG_PIN, LOW);
+  setupIMU();
+  elbowD(4000);
+  flipped = 1;
+  flipRobot();
+  flipped = 0;
+    goToStart(); //move robot to start position (arm will be up)
+  levelElbow(); //move elbow to parallel to floor
+  Serial.println("ready in 1");
+  delay(1000);
+}
+
+void loop() {
+  limitSW1 = digitalRead(limitSW1_PIN);
+  limitSW2 = digitalRead(limitSW2_PIN);
+  startSW = digitalRead(startSW_PIN);
+  if (startSW == 1) {
+    Serial.println("Start measuring obstacle heights");
+    createYVals(); //move & get data on what's beneath
+    createXVals(); //based on heights, create matrix of when movement occurred
+    //arduino does not have a file system, tried to use outside libraries to no avail
+    //will just copy from serial to matlab
+    Serial.print("xVals0 = ["); xVals0.printList(); xVals0.clear();
+    Serial.print("xVals1 = ["); xVals1.printList(); xVals1.clear();
+    Serial.print("yVals0 = ["); yVals0.printList(); yVals0.clear();
+    Serial.print("yVals1 = ["); yVals1.printList(); yVals1.clear();
+    while (true) {
+      //endless loop
+    }
+  }
+  //baseR(500);
+  //loopUS_DS(US_L_TRIG_PIN, US_L_ECHO_PIN);
+  Serial.print("TOP USDS: ");
+  loopUS_DS(US_T_TRIG_PIN, US_T_ECHO_PIN,1);
+  Serial.print("BOT USDS: ");
+  loopUS_DS(US_B_TRIG_PIN, US_B_ECHO_PIN,1);
+  Serial.print("LEFT USDS: ");
+  loopUS_DS(US_L_TRIG_PIN, US_L_ECHO_PIN,1);
+  Serial.println();
+  loopIMU(0);
+  //delay(1000);
+  
 }
